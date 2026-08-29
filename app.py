@@ -13,6 +13,7 @@ from pathlib import Path
 from flask import Flask, request, Response, abort
 
 from pipeline import DISCLAIMER, convert
+from resolucion import diagnosticar
 
 MAX_UPLOAD_MB = 20
 
@@ -38,6 +39,11 @@ PAGE = """
     button {{ margin-top: 1.6rem; padding: 0.7rem 1.6rem; font-size: 1rem; cursor: pointer; }}
     .msg {{ margin-top: 1.5rem; padding: 1rem; border-radius: 6px; }}
     .msg.error {{ background: #fce8e6; color: #611a15; }}
+    .msg.aviso {{ background: #fef7e0; color: #5c4413; }}
+    .msg.ok {{ background: #e6f4ea; color: #14532d; }}
+    .msg h2 {{ font-size: 1rem; margin: 0 0 0.6rem; }}
+    .msg ul {{ margin: 0.6rem 0 0; padding-left: 1.2rem; }}
+    .medida {{ font-family: ui-monospace, monospace; font-size: 0.85rem; }}
     .aviso-titulo {{ margin-top: 2.5rem; font-weight: bold; text-transform: uppercase; font-size: 0.9rem; }}
     .aviso {{ margin-top: 0.5rem; font-size: 0.85rem; color: #555; line-height: 1.5; }}
   </style>
@@ -55,11 +61,33 @@ PAGE = """
   <ul class="aviso">
     <li>La conversión puede tardar varios minutos, según el largo de la partitura — la página
       va a quedar esperando, no la cierres.</li>
+    <li><b>Antes de convertir se mide la resolución del PDF</b> y te avisa si no alcanza, así no
+      esperás al pedo. Lo que se mide es cuántos píxeles hay entre dos líneas del pentagrama:
+      hacen falta 20 como mínimo, 25 o más para que salga limpio.</li>
+    <li><b>Si la sacás con el celular, usá la cámara normal, no el modo "Escanear documentos".</b>
+      Ese modo endereza la hoja pero te la baja a unos 200 ppp, que en una partitura coral de 4 a 6
+      pentagramas por sistema no alcanza. Una foto común de la misma cámara tiene el doble o el
+      triple de píxeles. Poné la hoja bien plana (un vidrio o un libro pesado encima), la cámara
+      paralela a la hoja, buena luz y que la hoja llene el encuadre.</li>
+    <li>Un escáner plano a 400-600 ppp es lo más seguro, sobre todo porque además evita la comba
+      de la hoja, que también molesta.</li>
     <li>{disclaimer}</li>
   </ul>
 </body>
 </html>
 """
+
+
+def _bloque_medida(d):
+    """Resumen legible de la medición de resolución."""
+    linea = (
+        f'<p class="medida">página medida: {d["pagina_medida"]} &middot; {d["tamano_px"]} px '
+        f'(~{d["ppp"]} ppp) &middot; interlínea: <b>{d["interlinea_px"]} px</b></p>'
+    )
+    return linea
+
+
+PENDIENTES = {}  # job_id -> (pdf_path, job_dir, original_stem)
 
 
 @app.route("/", methods=["GET"])
@@ -81,6 +109,45 @@ def upload():
     pdf_path = job_dir / f"{job_id}.pdf"
     pdf_file.save(pdf_path)
 
+    diagnostico = None
+    try:
+        diagnostico = diagnosticar(pdf_path)
+    except Exception:
+        diagnostico = None  # si la medición falla, seguimos igual: es un aviso, no un requisito
+
+    if diagnostico and diagnostico["nivel"] == "insuficiente":
+        PENDIENTES[job_id] = (pdf_path, job_dir, original_stem)
+        aviso = (
+            '<div class="msg aviso">'
+            "<h2>La resolución de este PDF no alcanza</h2>"
+            f"<p>{diagnostico['veredicto']}</p>"
+            + _bloque_medida(diagnostico) +
+            f"<p>Para que Audiveris pueda leerla hacen falta unos <b>{diagnostico['ppp_necesarios']} ppp</b>"
+            f" ({diagnostico['factor_necesario']}x más de lo que tiene ahora).</p>"
+            "<ul>"
+            "<li>Si la sacaste con el modo <b>Escanear documentos</b> del celular, repetila con la"
+            " <b>cámara normal</b>: ese modo baja la imagen a unos 200 ppp y es justo lo que falta.</li>"
+            "<li>Mejor todavía: escáner plano a 400-600 ppp.</li>"
+            "</ul>"
+            f'<form method="post" action="/convertir-igual/{job_id}">'
+            '<button type="submit">Convertir igual</button></form>'
+            "</div>"
+        )
+        return PAGE.format(message=aviso, disclaimer=DISCLAIMER)
+
+    return _convertir(pdf_path, job_dir, job_id, original_stem, diagnostico)
+
+
+@app.route("/convertir-igual/<job_id>", methods=["POST"])
+def convertir_igual(job_id):
+    entrada = PENDIENTES.pop(job_id, None)
+    if not entrada:
+        abort(404)
+    pdf_path, job_dir, original_stem = entrada
+    return _convertir(pdf_path, job_dir, job_id, original_stem, None)
+
+
+def _convertir(pdf_path, job_dir, job_id, original_stem, diagnostico):
     try:
         musicxml_path, paginas_descartadas = convert(pdf_path, job_dir, job_id)
         aviso = ""
@@ -89,6 +156,11 @@ def upload():
                 f'<div class="msg error">ATENCIÓN: Audiveris no pudo procesar {paginas_descartadas} '
                 "página(s) del PDF y las descartó — es probable que al resultado le falte una parte de "
                 "la partitura (a veces el principio). Revisalo contra el PDF original.</div>"
+            )
+        if diagnostico and diagnostico["nivel"] == "justo":
+            aviso += (
+                '<div class="msg aviso">La resolución del PDF está justa, así que esperá bastantes '
+                "errores." + _bloque_medida(diagnostico) + "</div>"
             )
         READY[job_id] = (musicxml_path, job_dir, f"{original_stem}.musicxml")
         message = f'{aviso}<div class="msg ok"><a href="/download/{job_id}">Descargar {original_stem}.musicxml</a></div>'

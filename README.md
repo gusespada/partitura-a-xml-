@@ -40,6 +40,58 @@ pip install -r requirements.txt
 docker pull toprock/audiveris
 ```
 
+## Antes de convertir: la resolución del PDF
+
+Este es **el factor que más decide** si el resultado sirve o es basura, y no se ve
+a simple vista. Al subir el PDF la herramienta lo mide sola y te avisa antes de
+hacerte esperar diez minutos al pedo.
+
+Lo que se mide no son los ppp del archivo ni los megapíxeles de la cámara, sino
+**cuántos píxeles hay entre dos líneas del pentagrama** (la *interlínea*). Audiveris
+usa esa distancia para calcular el tamaño de todo lo demás — cabezas de nota, plicas,
+alteraciones, puntillos — y por debajo de cierto umbral no las puede distinguir.
+
+| Interlínea | Qué esperar |
+|---|---|
+| 25 px o más | Lectura casi limpia |
+| 20-25 px | Anda, con algunos errores |
+| 15-20 px | Bastantes errores |
+| menos de 15 px | Audiveris no encuentra ni las barras de compás |
+
+Por eso no alcanza con decir "sacala a 300 ppp": **una partitura coral a 5 o 6
+pentagramas por sistema está impresa mucho más chica que una de piano**, así que con
+los mismos ppp la coral puede quedar por debajo del umbral mientras la de piano pasa
+cómoda. Hay que medir, no suponer.
+
+### Si la sacás con el celular
+
+**No uses el modo "Escanear documentos"** (el de la app Notas o Archivos en iPhone, o
+el equivalente en Android). Endereza la hoja y recorta lindo, pero **te baja la imagen
+a unos 200 ppp**, y en una partitura coral eso da una interlínea de 11 a 13 px: por
+debajo del umbral. Es la causa más común de que la conversión salga mal.
+
+Usá la **cámara normal**, que tiene el doble o el triple de píxeles:
+
+| Cómo la sacaste | Resolución sobre una hoja A4 |
+|---|---|
+| Modo "Escanear documentos" | ~200 ppp |
+| Foto común, cámara de 12 MP | ~345 ppp |
+| Foto común, cámara de 48 MP | ~690 ppp |
+| Escáner plano | los que le pongas (usá 400-600) |
+
+Con la cámara normal, además:
+
+- Poné la hoja **bien plana** — un vidrio o un libro pesado encima. La comba de la
+  hoja curva los pentagramas y eso también rompe la lectura.
+- La cámara **paralela** a la hoja, no en diagonal.
+- Que la hoja **llene el encuadre**: si sobra mesa alrededor, estás tirando píxeles.
+- Buena luz pareja, sin sombra ni brillo.
+
+### Si tenés escáner
+
+Es lo más seguro: 400-600 ppp en escala de grises, y de paso te ahorrás la comba de la
+hoja. Para partituras corales chicas, mejor 600.
+
 ## Uso
 
 1. Abrí Docker Desktop (tiene que estar corriendo en segundo plano)
@@ -48,14 +100,22 @@ docker pull toprock/audiveris
    python3 app.py
    ```
 3. Abrí **http://localhost:8000** en tu navegador
-4. Subí un PDF y esperá — puede tardar varios minutos según el largo de la partitura
-5. Descargá el `.musicxml` resultante
+4. Subí un PDF. Primero se mide la resolución (un par de segundos): si no alcanza te
+   lo dice ahí mismo, con el número medido y cuánta falta, y podés volver a sacar la
+   foto en vez de esperar la conversión entera. Si querés intentarlo igual, hay un
+   botón para eso.
+5. Esperá — puede tardar varios minutos según el largo de la partitura
+6. Descargá el `.musicxml` resultante
 
 Si MuseScore no está instalado en la ruta habitual de tu sistema, definí la variable de entorno `MUSESCORE_PATH` con la ruta completa a su ejecutable antes de correr `app.py`.
 
 ## Límites conocidos
 
 Estos son límites reales del motor de reconocimiento (Audiveris), no bugs de este script — ya están probados y documentados con partituras reales:
+
+- Si la interlínea del PDF baja de 15 px no hay nada que hacer: se pierden las barras de compás
+  y el resultado sale inservible aunque la partitura original esté impresa perfecta (ver
+  [Antes de convertir](#antes-de-convertir-la-resolución-del-pdf))
 
 - No reconoce pentagramas de percusión corporal ni de instrumentos de acompañamiento (se pierden por completo)
 - No reconoce cabezas de nota en cruz (ritmo hablado, no cantado) — esos compases quedan en blanco
