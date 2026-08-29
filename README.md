@@ -58,6 +58,9 @@ alteraciones, puntillos — y por debajo de cierto umbral no las puede distingui
 | 15-20 px | Bastantes errores |
 | menos de 15 px | Audiveris no encuentra ni las barras de compás |
 
+Si en la página medida no hay pentagramas (una portada, un índice, una página de
+texto), la herramienta lo dice y no inventa un número.
+
 Por eso no alcanza con decir "sacala a 300 ppp": **una partitura coral a 5 o 6
 pentagramas por sistema está impresa mucho más chica que una de piano**, así que con
 los mismos ppp la coral puede quedar por debajo del umbral mientras la de piano pasa
@@ -116,6 +119,9 @@ Estos son límites reales del motor de reconocimiento (Audiveris), no bugs de es
 - Si la interlínea del PDF baja de 15 px no hay nada que hacer: se pierden las barras de compás
   y el resultado sale inservible aunque la partitura original esté impresa perfecta (ver
   [Antes de convertir](#antes-de-convertir-la-resolución-del-pdf))
+- **No lee partituras manuscritas.** Audiveris está entrenado con notación grabada por editor;
+  con una copia manuscrita no hay resolución que alcance. La medición te va a dar un número
+  razonable igual, porque el pentagrama está impreso, pero la conversión no va a servir.
 
 - No reconoce pentagramas de percusión corporal ni de instrumentos de acompañamiento (se pierden por completo)
 - No reconoce cabezas de nota en cruz (ritmo hablado, no cantado) — esos compases quedan en blanco
@@ -125,6 +131,22 @@ Estos son límites reales del motor de reconocimiento (Audiveris), no bugs de es
 - Letras con acentos pueden leerse mal (ej. "í" confundida con "l")
 - En partituras a 4 voces sin nombres reconocibles se asume Soprano/Alto/Tenor/Bajo (de arriba hacia abajo); otras combinaciones (SAB, SSA, etc.) pueden quedar sin etiquetar
 - Ocasionalmente Audiveris falla en una página puntual (un bug conocido y sin resolver del propio proyecto, [issue #583](https://github.com/Audiveris/audiveris/issues/583)) y la descarta del resultado sin avisar — este script detecta cuándo pasa y te avisa en pantalla, pero no puede recuperar el contenido perdido. Si ves ese aviso, revisá el resultado contra el PDF original.
+
+## Probar la medición
+
+`test_resolucion.py` corre la medición contra las páginas de `muestras/`, que son
+casos reales que la rompieron alguna vez: fotos de celular, partitura grabada
+achicada por Canva a 120 ppp, manuscritas (con la hoja derecha y con la hoja
+torcida), y páginas de texto, foto y portada donde no hay nada que medir y no
+tiene que devolver ningún número.
+
+```bash
+python3 test_resolucion.py
+```
+
+Si tocás `resolucion.py`, corrélo: los tres parámetros de la medición (`BANDAS`,
+`FRACCION_ANCHO`, `PASO_BUSQUEDA`) están ajustados contra ese banco y es fácil
+arreglar un caso rompiendo otro.
 
 ## Por qué pasa por MuseScore y no solo por Audiveris
 

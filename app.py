@@ -115,6 +115,11 @@ def upload():
     except Exception:
         diagnostico = None  # si la medición falla, seguimos igual: es un aviso, no un requisito
 
+    if diagnostico and diagnostico["nivel"] == "sin_pentagrama":
+        # no es motivo para frenar: puede ser un PDF ya digital (sin imágenes),
+        # o que la página del medio sea una portada o un índice
+        diagnostico = None
+
     if diagnostico and diagnostico["nivel"] == "insuficiente":
         PENDIENTES[job_id] = (pdf_path, job_dir, original_stem)
         aviso = (

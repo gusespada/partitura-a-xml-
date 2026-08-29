@@ -24,6 +24,13 @@ INTERLINEA_COMODA = 25      # de acá para arriba, lectura casi limpia
 INTERLINEA_MINIMA = 20      # de acá para abajo, Audiveris empieza a fallar feo
 INTERLINEA_INUTIL = 15      # de acá para abajo, no vale la pena ni intentarlo
 
+# Parámetros de la medición. Ajustados contra un banco de páginas reales:
+# fotos de celular, partitura grabada reducida por Canva, manuscritas (derechas
+# y torcidas), y páginas de texto, foto y portada que no tienen que medir nada.
+BANDAS = 10                 # franjas verticales en que se parte la página
+FRACCION_ANCHO = 0.30       # cuánto de la franja tiene que cruzar una línea
+PASO_BUSQUEDA = 0.5         # resolución de la búsqueda gruesa, en píxeles
+
 
 def _otsu(a):
     hist, _ = np.histogram(a, bins=256, range=(0, 256))
@@ -48,17 +55,22 @@ def _otsu(a):
     return mejor[1]
 
 
-def _perfil_de_lineas(imagen_path):
-    """Perfil por filas de los píxeles que son 'línea horizontal fina'.
+def _perfiles_de_lineas(imagen_path, bandas=BANDAS):
+    """Perfil por filas de los píxeles que son 'línea horizontal fina',
+    calculado por separado en `bandas` franjas verticales de la página.
 
     Se queda solo con la tinta cuya corrida vertical es corta: eso deja las
     líneas del pentagrama y descarta cabezas de nota, plicas y letra, que son
-    verticalmente gruesas. Sobre ese perfil, las cinco líneas de cada pentagrama
-    aparecen como picos regularmente espaciados.
+    verticalmente gruesas.
+
+    Se mide por franjas y no sobre la página entera porque casi ninguna hoja
+    está perfectamente derecha: con dos grados de inclinación una misma línea
+    de pentagrama se reparte entre varias filas y deja de verse como un pico.
+    Dentro de una franja angosta la línea sí cae casi toda en la misma fila.
     """
     im = Image.open(imagen_path).convert("L")
     a = np.array(im)
-    alto, _ = a.shape
+    alto, ancho = a.shape
     tinta = a < _otsu(a)
 
     arriba = np.zeros_like(tinta, dtype=np.int16)
@@ -70,29 +82,82 @@ def _perfil_de_lineas(imagen_path):
     corrida = np.where(tinta, arriba + abajo - 1, 0)
 
     grosor_max = max(2, int(alto / 500))  # una línea de pentagrama es finita
-    perfil = (tinta & (corrida <= grosor_max)).sum(axis=1).astype(float)
-    return perfil - perfil.mean(), alto
+    fino = tinta & (corrida <= grosor_max)
+
+    ancho_banda = ancho // bandas
+    perfiles = []
+    for b in range(bandas):
+        x0 = b * ancho_banda
+        x1 = ancho if b == bandas - 1 else (b + 1) * ancho_banda
+        perfil = fino[:, x0:x1].sum(axis=1).astype(float)
+        # ensanchamos cada pico una fila para arriba y otra para abajo: aunque
+        # la franja sea angosta, si la hoja está torcida la línea sigue cayendo
+        # en dos filas vecinas y si no, el peine no la engancha
+        perfiles.append(np.maximum(np.maximum(perfil, np.roll(perfil, 1)), np.roll(perfil, -1)))
+    return perfiles, alto, ancho_banda
+
+
+def _puntaje_peine(perfil, alto, sp, umbral):
+    """Qué tan bien un peine de cinco líneas separadas `sp` explica el perfil.
+
+    Devuelve (filas_acertadas, tinta_acumulada). Se puntúa con el MÍNIMO de las
+    cinco filas, no con la suma: el candidato solo puntúa si las cinco líneas
+    están presentes de verdad. Eso descarta solo los múltiplos y submúltiplos
+    (con sp/2 las filas intermedias están vacías; con 2*sp las dos últimas caen
+    fuera del pentagrama) y las zonas de mucha tinta que no son pentagrama.
+    """
+    tope = alto - int(np.ceil(4 * sp)) - 1
+    if tope <= 0:
+        return (0, 0.0)
+    filas = np.arange(tope, dtype=float)
+    indices = np.arange(alto, dtype=float)
+    peine = None
+    for k in range(5):
+        valores = np.interp(filas + k * sp, indices, perfil)
+        peine = valores if peine is None else np.minimum(peine, valores)
+    aciertos = peine >= umbral
+    return (int(aciertos.sum()), float(peine[aciertos].sum()))
 
 
 def medir_interlinea(imagen_path):
-    """Interlínea en píxeles: separación vertical entre líneas del pentagrama."""
-    perfil, alto = _perfil_de_lineas(imagen_path)
+    """Interlínea en píxeles, o None si en la página no hay pentagramas.
 
-    # 1) autocorrelación: el primer pico fuerte es la interlínea
-    mejor = None
-    for lag in range(4, min(80, alto // 12)):
-        c = float(np.dot(perfil[:-lag], perfil[lag:])) / (alto - lag)
-        if mejor is None or c > mejor[0]:
-            mejor = (c, lag)
-    aprox = mejor[1]
+    Devolver None es parte del resultado, no un error: en un cancionero hay
+    portadas, índices y páginas de texto donde no hay nada que medir.
+    """
+    perfiles, alto, ancho_banda = _perfiles_de_lineas(imagen_path)
+    umbral = FRACCION_ANCHO * ancho_banda
+    sp_max = min(70.0, alto / 12)
 
-    # 2) refino con un peine de 5 líneas, que es lo que realmente es un pentagrama
-    refinada = None
-    for sp in np.arange(aprox - 1.5, aprox + 1.5, 0.05):
-        filas = np.arange(0, alto - int(4 * sp) - 1)
-        puntaje = sum(perfil[filas + int(round(k * sp))] for k in range(5)).max()
-        if refinada is None or puntaje > refinada[0]:
-            refinada = (puntaje, float(sp))
+    ganadores = []
+    for perfil in perfiles:
+        mejor = None
+        sp = 4.0
+        while sp <= sp_max:
+            puntaje = _puntaje_peine(perfil, alto, sp, umbral)
+            if puntaje[0] and (mejor is None or puntaje > mejor[0]):
+                mejor = (puntaje, sp, perfil)
+            sp += PASO_BUSQUEDA
+        if mejor:
+            ganadores.append(mejor)
+
+    # una sola franja puede acertar por casualidad (un renglón de texto, un
+    # recuadro); pedimos que al menos dos franjas coincidan en la separación
+    if len(ganadores) < 2:
+        return None
+    candidatos = sorted(g[1] for g in ganadores)
+    mediana = candidatos[len(candidatos) // 2]
+    de_acuerdo = [g for g in ganadores if abs(g[1] - mediana) <= max(1.0, 0.1 * mediana)]
+    if len(de_acuerdo) < 2:
+        return None
+
+    # refino sobre la franja que mejor puntuó de las que están de acuerdo
+    puntaje, entero, perfil = max(de_acuerdo, key=lambda g: g[0])
+    refinada = (puntaje, entero)
+    for sp in np.arange(max(4.0, entero - 1.0), entero + 1.001, 0.05):
+        nuevo = _puntaje_peine(perfil, alto, float(sp), umbral)
+        if nuevo > refinada[0]:
+            refinada = (nuevo, float(sp))
     return refinada[1]
 
 
@@ -122,6 +187,13 @@ def diagnosticar(pdf_path, alto_pagina_mm=297.0):
         ancho, alto = Image.open(imagen).size
         interlinea = medir_interlinea(imagen)
         ppp = alto / (alto_pagina_mm / 25.4)
+        if interlinea is None:
+            return {
+                "nivel": "sin_pentagrama",
+                "veredicto": "En la página medida no se encontraron pentagramas.",
+                "interlinea_px": None, "ppp": round(ppp), "pagina_medida": pagina,
+                "tamano_px": f"{ancho}x{alto}", "ppp_necesarios": None, "factor_necesario": None,
+            }
 
         if interlinea >= INTERLINEA_COMODA:
             nivel, veredicto = "ok", "Resolución holgada: Audiveris debería leerla casi limpia."
