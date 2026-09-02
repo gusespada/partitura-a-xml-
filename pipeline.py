@@ -139,6 +139,14 @@ def run_audiveris(job_dir: Path, job_id: str, pdf_path: Path):
     )
     mxl_path = out_dir / job_id / f"{job_id}.mxl"
     if not mxl_path.exists():
+        # Cuando Audiveris parte el libro en movimientos (o una hoja falla a
+        # medias) exporta <id>.mvt1.mxl, <id>.mvt2.mxl… en vez de <id>.mxl:
+        # se toma el más grande, que es la partitura principal.
+        movimientos = sorted((out_dir / job_id).glob(f"{job_id}*.mxl"),
+                             key=lambda f: f.stat().st_size, reverse=True)
+        if movimientos:
+            mxl_path = movimientos[0]
+    if not mxl_path.exists():
         raise RuntimeError(f"Audiveris no generó salida.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     paginas_descartadas = len(re.findall(r"flagged as invalid|Error in performing \[", result.stdout))
     return mxl_path, paginas_descartadas
