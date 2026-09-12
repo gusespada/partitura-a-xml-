@@ -38,7 +38,19 @@ python3 -m venv .venv
 source .venv/bin/activate   # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 docker pull toprock/audiveris
+docker build --platform linux/amd64 -t audiveris:5.11.0 audiveris511
 ```
+
+La herramienta usa **Audiveris 5.11**, que lee bastante mejor que la 5.3 de
+`toprock/audiveris`: sobre una fotocopia escaneada con el celular, los compases bien
+leídos pasaron de 43% a 55%, y lee las letras en español. No hay imagen publicada de la
+5.11, así que la última línea la construye desde el instalador oficial
+(`audiveris511/Dockerfile`); tarda unos minutos y se hace una sola vez. La 5.3 queda
+como respaldo: si la 5.11 no entrega nada con una partitura (pasa con alguna página
+que la hace fallar), o si no la construiste, se usa la 5.3 sola.
+
+En una Mac con procesador Apple (M1, M2…) las dos corren emuladas, porque Audiveris
+solo se distribuye para Intel: funcionan, pero más lento.
 
 ## Antes de convertir: la resolución del PDF
 
@@ -90,6 +102,12 @@ Con la cámara normal, además:
 - Que la hoja **llene el encuadre**: si sobra mesa alrededor, estás tirando píxeles.
 - Buena luz pareja, sin sombra ni brillo.
 
+La herramienta no retoca la imagen antes de pasarla a Audiveris. Probamos enderezar la
+hoja, emparejar la luz y pasar a blanco y negro (`preproceso.py`): emparejar la luz y el
+blanco y negro **empeoran** la lectura, porque Audiveris ya lo hace por su cuenta y mejor;
+y enderezar, sobre 15 escaneos reales, mejoró unos y empeoró otros sin ninguna regla que
+permita saber de antemano cuáles. Lo que sí decide es cómo sacás la foto (arriba).
+
 ### Si tenés escáner
 
 Es lo más seguro: 400-600 ppp en escala de grises, y de paso te ahorrás la comba de la
@@ -128,8 +146,8 @@ Estos son límites reales del motor de reconocimiento (Audiveris), no bugs de es
 - Compases con compases complejos o poco frecuentes a veces se malinterpretan
 - Puede insertar cambios de clave que no existen en el original
 - Indicaciones dinámicas, de tempo ("rit.", "rall.") y metronómicas a veces no se reconocen o quedan como texto suelto sin efecto real
-- Letras con acentos pueden leerse mal (ej. "í" confundida con "l")
-- En partituras a 4 voces sin nombres reconocibles se asume Soprano/Alto/Tenor/Bajo (de arriba hacia abajo); otras combinaciones (SAB, SSA, etc.) pueden quedar sin etiquetar
+- Letras con acentos pueden leerse mal (ej. "í" confundida con "l"), sobre todo con la 5.3; la 5.11 trae el español
+- Con la 5.11 las voces salen sin nombre ("Voice"): es a propósito, porque si lee "Soprano" en el primer sistema y "S." en los siguientes las toma como voces distintas y parte el coro. En partituras a 4 voces se asume Soprano/Alto/Tenor/Bajo (de arriba hacia abajo); otras combinaciones (SAB, SSA, etc.) quedan sin etiquetar
 - Ocasionalmente Audiveris falla en una página puntual (un bug conocido y sin resolver del propio proyecto, [issue #583](https://github.com/Audiveris/audiveris/issues/583)) y la descarta del resultado sin avisar — este script detecta cuándo pasa y te avisa en pantalla, pero no puede recuperar el contenido perdido. Si ves ese aviso, revisá el resultado contra el PDF original.
 
 ## Probar la medición

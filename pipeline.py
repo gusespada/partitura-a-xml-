@@ -109,47 +109,87 @@ def preprocess_pdf(pdf_path: Path, job_dir: Path) -> Path:
     return rebuilt
 
 
+# Audiveris 5.11 (imagen propia, ver audiveris511/Dockerfile) lee bastante mejor
+# que la 5.3 de toprock/audiveris, pero cuando una página le hace fallar el
+# procesamiento a veces aborta la exportación entera y no entrega nada, donde la
+# 5.3 salteaba esa página y exportaba el resto. Por eso se prueba primero la 5.11
+# y, si no deja resultado (o la imagen no está construida), se reintenta con la 5.3.
+AUDIVERIS_NUEVA = "audiveris:5.11.0"
+AUDIVERIS_VIEJA = "toprock/audiveris"
+# Idiomas del reconocimiento de texto (letra, título, nombres de las voces). La
+# imagen vieja no tenía español: leía las letras con los modelos de inglés,
+# alemán y francés.
+IDIOMAS_OCR = "spa+eng"
+# La 5.11 une las voces de un sistema al siguiente por el NOMBRE que lee a la
+# izquierda del pentagrama. En partitura coral el primer sistema dice "Soprano,
+# Alto, Tenor" y los siguientes "S., A., T.", así que las tomaba como voces
+# distintas y un SATB salía con 8 voces, cada una con la mitad de la música. Con
+# una regla que ningún texto cumple deja de reconocer nombres de voz y vuelve a
+# unirlas por posición, que es lo correcto. Los nombres se pierden; en SATB los
+# repone fix_voice_instruments.
+SIN_NOMBRES_DE_VOZ = "org.audiveris.omr.text.TextWord.partNameRegexp=(?!)"
+# Frases con las que Audiveris avisa que una página quedó afuera. Las dos primeras
+# son de la 5.3; la 5.11 anota los crashes de página como "Error processing stub".
+PAGINA_DESCARTADA = re.compile(r"flagged as invalid|Error in performing \[|Error processing stub")
+
+
+def _mxl_resultante(carpeta: Path):
+    """El .mxl más grande que dejó Audiveris, esté donde esté: la 5.3 lo guarda en
+    <id>/<id>.mxl, la 5.11 lo deja suelto, y cuando parte la obra en movimientos
+    exporta <id>.mvt1.mxl, <id>.mvt2.mxl... — el más grande es la partitura principal."""
+    mxls = sorted(carpeta.rglob("*.mxl"), key=lambda f: f.stat().st_size, reverse=True)
+    return mxls[0] if mxls else None
+
+
 def run_audiveris(job_dir: Path, job_id: str, pdf_path: Path):
     """Corre Audiveris en Docker sobre el PDF (ya preprocesado).
 
     Devuelve (mxl_path, paginas_descartadas). Audiveris a veces falla en una
-    página puntual (crash interno, imagen ilegible) y la descarta en silencio
-    sin abortar el resto del libro — el .mxl final se genera igual, pero le
-    falta esa página, sin ningún aviso. Se detecta buscando en el log las dos
-    frases que usa Audiveris para señalar que una página quedó afuera
-    ("flagged as invalid" para imágenes ilegibles, "Error in performing"
-    para crashes internos durante el procesamiento) — es un bug conocido de
-    Audiveris (https://github.com/Audiveris/audiveris/issues/583, sigue
-    abierto), no hay forma de evitarlo desde acá, solo avisar.
+    página puntual (crash interno, imagen ilegible) y la descarta sin abortar el
+    resto del libro — el .mxl se genera igual, pero le falta esa página, sin
+    ningún aviso. Se detecta buscando en el log las frases de PAGINA_DESCARTADA
+    — es un bug conocido de Audiveris
+    (https://github.com/Audiveris/audiveris/issues/583), no hay forma de
+    evitarlo desde acá, solo avisar.
     """
     audiveris_input_dir = job_dir / "audiveris_input"
     audiveris_input_dir.mkdir(exist_ok=True)
-    shutil.copy(pdf_path, audiveris_input_dir / f"{job_id}.pdf")
+    entrada = f"{job_id}{pdf_path.suffix.lower()}"
+    shutil.copy(pdf_path, audiveris_input_dir / entrada)
 
     out_dir = job_dir / "audiveris_out"
     out_dir.mkdir(exist_ok=True)
-    result = subprocess.run(
-        [
-            "docker", "run", "--rm",
-            "-v", f"{audiveris_input_dir}:/input:ro",
-            "-v", f"{out_dir}:/output",
-            "toprock/audiveris",
-        ],
-        capture_output=True, text=True, timeout=900,
-    )
-    mxl_path = out_dir / job_id / f"{job_id}.mxl"
-    if not mxl_path.exists():
-        # Cuando Audiveris parte el libro en movimientos (o una hoja falla a
-        # medias) exporta <id>.mvt1.mxl, <id>.mvt2.mxl… en vez de <id>.mxl:
-        # se toma el más grande, que es la partitura principal.
-        movimientos = sorted((out_dir / job_id).glob(f"{job_id}*.mxl"),
-                             key=lambda f: f.stat().st_size, reverse=True)
-        if movimientos:
-            mxl_path = movimientos[0]
-    if not mxl_path.exists():
-        raise RuntimeError(f"Audiveris no generó salida.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
-    paginas_descartadas = len(re.findall(r"flagged as invalid|Error in performing \[", result.stdout))
-    return mxl_path, paginas_descartadas
+    intentos = [
+        (AUDIVERIS_NUEVA, [
+            "-batch", "-export",
+            "-constant", f"org.audiveris.omr.text.Language.defaultSpecification={IDIOMAS_OCR}",
+            "-constant", SIN_NOMBRES_DE_VOZ,
+            "-output", "/output", f"/input/{entrada}",
+        ]),
+        # su comando por omisión solo toma /input/*.pdf, *.png y *.jpg, y el
+        # escaneo enderezado llega como .tif: se le pasa el archivo explícito
+        (AUDIVERIS_VIEJA, [
+            "/audiveris-extract/bin/Audiveris", "-batch", "-export",
+            "-output", "/output/", f"/input/{entrada}",
+        ]),
+    ]
+    registros = []
+    for imagen, argumentos in intentos:
+        salida = out_dir / imagen.replace("/", "_").replace(":", "_")
+        salida.mkdir(exist_ok=True)
+        result = subprocess.run(
+            ["docker", "run", "--rm", "--pull", "never",
+             "-v", f"{audiveris_input_dir}:/input:ro",
+             "-v", f"{salida}:/output",
+             imagen, *argumentos],
+            capture_output=True, text=True, timeout=900,
+        )
+        log = (result.stdout or "") + (result.stderr or "")
+        mxl_path = _mxl_resultante(salida)
+        if mxl_path:
+            return mxl_path, len(PAGINA_DESCARTADA.findall(log))
+        registros.append(f"--- {imagen} ---\n{log[-4000:]}")
+    raise RuntimeError("Audiveris no generó salida.\n" + "\n".join(registros))
 
 
 def run_musescore_normalize(mxl_path: Path, job_dir: Path, job_id: str) -> Path:
